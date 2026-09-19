@@ -1064,6 +1064,82 @@ pub async fn read_package_executable(
     Ok(package_directory.join(relative_path))
 }
 
+/// How to launch an npm package's executable.
+///
+/// Most npm `bin` entries are JavaScript, but some packages (esbuild, droid,
+/// etc.) replace the bin with a native platform binary in a postinstall script,
+/// so the launcher has to be chosen per file. Launching a native binary as
+/// `node <bin>` fails with a SyntaxError. See zed#62716.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentExecutableLaunch {
+    /// Run the file itself; the OS dispatches shebang scripts and native formats.
+    Direct(PathBuf),
+    /// Run as `node <path>`; used for JavaScript without a usable shebang
+    /// (and on Windows, where the OS cannot execute shebang scripts).
+    ViaNode(PathBuf),
+}
+
+/// Decides how to launch an npm package executable based on its first bytes.
+///
+/// Falls back to `ViaNode` when the file can't be read, matching the behavior
+/// for plain JavaScript.
+pub async fn resolve_agent_executable_launch(executable: PathBuf) -> AgentExecutableLaunch {
+    match read_file_prefix(&executable).await {
+        Some(prefix) => {
+            if classify_executable_bytes(&prefix) {
+                AgentExecutableLaunch::Direct(executable)
+            } else {
+                AgentExecutableLaunch::ViaNode(executable)
+            }
+        }
+        None => {
+            log::warn!(
+                "Failed to read npm package executable {}, launching it via `node`",
+                executable.display()
+            );
+            AgentExecutableLaunch::ViaNode(executable)
+        }
+    }
+}
+
+async fn read_file_prefix(path: &Path) -> Option<Vec<u8>> {
+    let mut file = fs::File::open(path).await.ok()?;
+    let mut prefix = vec![0; 4];
+    let prefix_len = file.read(&mut prefix).await.ok()?;
+    prefix.truncate(prefix_len);
+    Some(prefix)
+}
+
+/// Magic bytes of Mach-O thin binaries (32/64-bit, both endiannesses) and
+/// universal (fat) binaries.
+const MACH_O_MAGICS: [[u8; 4]; 6] = [
+    [0xFE, 0xED, 0xFA, 0xCE],
+    [0xCE, 0xFA, 0xED, 0xFE],
+    [0xFE, 0xED, 0xFA, 0xCF],
+    [0xCF, 0xFA, 0xED, 0xFE],
+    [0xCA, 0xFE, 0xBA, 0xBE],
+    [0xBE, 0xBA, 0xFE, 0xCA],
+];
+
+fn classify_executable_bytes(bytes: &[u8]) -> bool {
+    if bytes.starts_with(b"\x7fELF") || bytes.starts_with(b"MZ") {
+        return true;
+    }
+    if bytes.len() >= 4 {
+        let mut magic = [0; 4];
+        magic.copy_from_slice(&bytes[..4]);
+        if MACH_O_MAGICS.contains(&magic) {
+            return true;
+        }
+    }
+    // Windows cannot execute shebang scripts itself, so they need Node.
+    #[cfg(not(windows))]
+    if bytes.starts_with(b"#!") {
+        return true;
+    }
+    false
+}
+
 #[derive(Clone)]
 pub struct UnavailableNodeRuntime {
     error_message: Arc<String>,
@@ -1197,8 +1273,10 @@ mod tests {
     use semver::{Version, VersionReq};
 
     use super::{
-        NpmInfo, VersionStrategy, build_npm_command_args, deserialize_npm_info_from_response,
-        proxy_argument, select_npm_package_version, should_install_npm_package_version,
+        AgentExecutableLaunch, NpmInfo, VersionStrategy, build_npm_command_args,
+        classify_executable_bytes, deserialize_npm_info_from_response, proxy_argument,
+        resolve_agent_executable_launch, select_npm_package_version,
+        should_install_npm_package_version,
     };
 
     // Map localhost to 127.0.0.1
