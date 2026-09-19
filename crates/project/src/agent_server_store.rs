@@ -14,7 +14,7 @@ use gpui::{
     TaskExt,
 };
 use http_client::{HttpClient, github::AssetKind};
-use node_runtime::NodeRuntime;
+use node_runtime::{AgentExecutableLaunch, NodeRuntime};
 use percent_encoding::percent_decode_str;
 use remote::RemoteClient;
 use rpc::{AnyProtoClient, TypedEnvelope, proto};
@@ -1410,12 +1410,19 @@ impl ExternalAgentServer for LocalRegistryNpxAgent {
             env.extend(extra_env);
             env.extend(settings_env);
 
-            let mut command_args = vec![executable.to_string_lossy().into_owned()];
+            let (path, mut command_args) =
+                match node_runtime::resolve_agent_executable_launch(executable).await {
+                    AgentExecutableLaunch::Direct(executable) => (executable, Vec::new()),
+                    AgentExecutableLaunch::ViaNode(executable) => (
+                        node_binary,
+                        vec![executable.to_string_lossy().into_owned()],
+                    ),
+                };
             command_args.extend(args);
             command_args.extend(extra_args);
 
             let command = AgentServerCommand {
-                path: node_binary,
+                path,
                 args: command_args,
                 env: Some(env),
             };
