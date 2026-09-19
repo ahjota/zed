@@ -1736,4 +1736,101 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn test_classify_executable_bytes_native_binaries() {
+        let native_binaries: [&[u8]; 9] = [
+            // ELF
+            b"\x7fELF\x02\x01\x01\x00",
+            // PE
+            b"MZ\x90\x00",
+            b"MZ",
+            // Mach-O thin, 32-bit both endiannesses
+            &[0xFE, 0xED, 0xFA, 0xCE],
+            &[0xCE, 0xFA, 0xED, 0xFE],
+            // Mach-O thin, 64-bit both endiannesses
+            &[0xFE, 0xED, 0xFA, 0xCF],
+            &[0xCF, 0xFA, 0xED, 0xFE],
+            // Mach-O fat binaries, both endiannesses
+            &[0xCA, 0xFE, 0xBA, 0xBE],
+            &[0xBE, 0xBA, 0xFE, 0xCA],
+        ];
+        for bytes in native_binaries {
+            assert!(
+                classify_executable_bytes(bytes),
+                "expected {} to classify as a native binary",
+                String::from_utf8_lossy(bytes)
+            );
+        }
+    }
+
+    #[test]
+    fn test_classify_executable_bytes_shebang() {
+        let bytes = b"#!/usr/bin/env node\nconsole.log('hi');\n";
+        // Only Unix can execute shebang scripts itself.
+        assert_eq!(classify_executable_bytes(bytes), cfg!(not(windows)));
+    }
+
+    #[test]
+    fn test_classify_executable_bytes_javascript() {
+        assert!(!classify_executable_bytes(b"console.log('hi');"));
+        assert!(!classify_executable_bytes(b""));
+        assert!(!classify_executable_bytes(b"ab"));
+        assert!(!classify_executable_bytes(b"abc"));
+    }
+
+    #[test]
+    fn test_resolve_agent_executable_launch() {
+        smol::block_on(async {
+            let directory = std::env::temp_dir().join(format!(
+                "zed-node-runtime-launch-{}",
+                std::process::id()
+            ));
+            smol::fs::create_dir_all(&directory).await.unwrap();
+
+            let executable = directory.join("agent-bin");
+            let cases: Vec<(&[u8], bool)> = vec![
+                (&b"\x7fELF\x02\x01\x01\x00"[..], true),
+                (&[0xCF, 0xFA, 0xED, 0xFE, 0x00, 0x00], true),
+                (
+                    b"#!/usr/bin/env node\nconsole.log('hi');\n",
+                    cfg!(not(windows)),
+                ),
+                (b"console.log('hi');", false),
+                (b"", false),
+            ];
+            for (contents, direct) in cases {
+                smol::fs::write(&executable, contents).await.unwrap();
+                let launch = resolve_agent_executable_launch(executable.clone()).await;
+                assert_eq!(
+                    launch,
+                    if direct {
+                        AgentExecutableLaunch::Direct(executable.clone())
+                    } else {
+                        AgentExecutableLaunch::ViaNode(executable.clone())
+                    },
+                    "wrong launch method for {}",
+                    String::from_utf8_lossy(contents)
+                );
+            }
+
+            // Grok-style postinstall symlinks the bin to a native binary.
+            #[cfg(unix)]
+            {
+                let native = directory.join("agent-bin-native");
+                smol::fs::write(&native, b"\x7fELF\x02\x01\x01\x00")
+                    .await
+                    .unwrap();
+                std::fs::remove_file(&executable).unwrap();
+                std::os::unix::fs::symlink(&native, &executable).unwrap();
+                assert_eq!(
+                    resolve_agent_executable_launch(executable.clone()).await,
+                    AgentExecutableLaunch::Direct(executable.clone())
+                );
+            }
+
+            std::fs::remove_file(&executable).unwrap();
+            std::fs::remove_dir_all(&directory).unwrap();
+        });
+    }
 }
