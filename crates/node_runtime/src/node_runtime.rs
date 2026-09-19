@@ -1086,7 +1086,13 @@ pub enum AgentExecutableLaunch {
 pub async fn resolve_agent_executable_launch(executable: PathBuf) -> AgentExecutableLaunch {
     match read_file_prefix(&executable).await {
         Some(prefix) => {
-            if classify_executable_bytes(&prefix) {
+            let direct = classify_executable_bytes(&prefix);
+            log::debug!(
+                "Launching npm package executable {} {}",
+                executable.display(),
+                if direct { "directly" } else { "via `node`" }
+            );
+            if direct {
                 AgentExecutableLaunch::Direct(executable)
             } else {
                 AgentExecutableLaunch::ViaNode(executable)
