@@ -1134,7 +1134,8 @@ const MACH_O_MAGICS: [[u8; 4]; 6] = [
 ];
 
 fn classify_executable_bytes(bytes: &[u8]) -> bool {
-    // ELF: `ELFMAG`, the first field of the ELF header
+    // ELF: `ELFMAG` (`\x7fELF`), identical for all ELF classes and
+    // endiannesses — 32/64-bit and byte order live in EI_CLASS/EI_DATA
     // (https://refspecs.linuxbase.org/elf/gabi4+/ch4.eheader.html).
     // PE: the `MZ` DOS header signature
     // (https://learn.microsoft.com/en-us/windows/win32/debug/pe-format).
