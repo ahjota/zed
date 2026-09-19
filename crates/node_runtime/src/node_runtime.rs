@@ -1112,16 +1112,26 @@ async fn read_file_prefix(path: &Path) -> Option<Vec<u8>> {
 
 /// Magic bytes of Mach-O thin binaries (32/64-bit, both endiannesses) and
 /// universal (fat) binaries.
+///
+/// `MH_*` magics are the `magic` field of `struct mach_header`
+/// (https://raw.githubusercontent.com/apple-oss-distributions/cctools/main/include/mach-o/loader.h),
+/// `FAT_*` are `struct fat_header`
+/// (https://raw.githubusercontent.com/apple-oss-distributions/cctools/main/include/mach-o/fat.h);
+/// see also https://github.com/llvm/llvm-project/blob/main/llvm/include/llvm/BinaryFormat/MachO.h.
 const MACH_O_MAGICS: [[u8; 4]; 6] = [
-    [0xFE, 0xED, 0xFA, 0xCE],
-    [0xCE, 0xFA, 0xED, 0xFE],
-    [0xFE, 0xED, 0xFA, 0xCF],
-    [0xCF, 0xFA, 0xED, 0xFE],
-    [0xCA, 0xFE, 0xBA, 0xBE],
-    [0xBE, 0xBA, 0xFE, 0xCA],
+    [0xFE, 0xED, 0xFA, 0xCE], // MH_MAGIC
+    [0xCE, 0xFA, 0xED, 0xFE], // MH_CIGAM
+    [0xFE, 0xED, 0xFA, 0xCF], // MH_MAGIC_64
+    [0xCF, 0xFA, 0xED, 0xFE], // MH_CIGAM_64
+    [0xCA, 0xFE, 0xBA, 0xBE], // FAT_MAGIC
+    [0xBE, 0xBA, 0xFE, 0xCA], // FAT_CIGAM
 ];
 
 fn classify_executable_bytes(bytes: &[u8]) -> bool {
+    // ELF: `ELFMAG`, the first field of the ELF header
+    // (https://refspecs.linuxbase.org/elf/gabi4+/ch4.eheader.html).
+    // PE: the `MZ` DOS header signature
+    // (https://learn.microsoft.com/en-us/windows/win32/debug/pe-format).
     if bytes.starts_with(b"\x7fELF") || bytes.starts_with(b"MZ") {
         return true;
     }
